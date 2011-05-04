@@ -56,11 +56,13 @@ public class NodeEnvironment extends AbstractComponent {
         Lock lock = null;
         File dir = null;
         int localNodeId = -1;
-        for (int i = 0; i < 100; i++) {
+        IOException lastException = null;
+        for (int i = 0; i < 50; i++) {
             dir = new File(new File(environment.dataWithClusterFile(), "nodes"), Integer.toString(i));
             if (!dir.exists()) {
                 dir.mkdirs();
             }
+            logger.trace("obtaining node lock on {} ...", dir.getAbsolutePath());
             try {
                 NativeFSLockFactory lockFactory = new NativeFSLockFactory(dir);
                 Lock tmpLock = lockFactory.makeLock("node.lock");
@@ -69,13 +71,16 @@ public class NodeEnvironment extends AbstractComponent {
                     lock = tmpLock;
                     localNodeId = i;
                     break;
+                } else {
+                    logger.trace("failed to obtain node lock on {}", dir.getAbsolutePath());
                 }
             } catch (IOException e) {
-                // ignore
+                logger.trace("failed to obtain node lock on {}", e, dir.getAbsolutePath());
+                lastException = e;
             }
         }
         if (lock == null) {
-            throw new IOException("Failed to obtain node lock");
+            throw new IOException("Failed to obtain node lock", lastException);
         }
         this.localNodeId = localNodeId;
         this.lock = lock;
@@ -100,8 +105,12 @@ public class NodeEnvironment extends AbstractComponent {
         return nodeFile;
     }
 
+    public File indicesLocation() {
+        return new File(nodeDataLocation(), "indices");
+    }
+
     public File indexLocation(Index index) {
-        return new File(new File(nodeDataLocation(), "indices"), index.name());
+        return new File(indicesLocation(), index.name());
     }
 
     public File shardLocation(ShardId shardId) {

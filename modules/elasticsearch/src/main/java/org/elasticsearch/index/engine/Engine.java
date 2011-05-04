@@ -21,6 +21,7 @@ package org.elasticsearch.index.engine;
 
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.index.ExtendedIndexSearcher;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.Query;
@@ -28,14 +29,17 @@ import org.elasticsearch.ElasticSearchException;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.component.CloseableComponent;
 import org.elasticsearch.common.lease.Releasable;
-import org.elasticsearch.common.lucene.search.ExtendedIndexSearcher;
 import org.elasticsearch.common.lucene.uid.UidField;
 import org.elasticsearch.common.unit.ByteSizeValue;
+import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.concurrent.ThreadSafe;
+import org.elasticsearch.index.VersionType;
 import org.elasticsearch.index.deletionpolicy.SnapshotIndexCommit;
+import org.elasticsearch.index.mapper.DocumentMapper;
 import org.elasticsearch.index.mapper.ParsedDocument;
 import org.elasticsearch.index.mapper.UidFieldMapper;
 import org.elasticsearch.index.shard.IndexShardComponent;
+import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.translog.Translog;
 
 /**
@@ -44,7 +48,16 @@ import org.elasticsearch.index.translog.Translog;
 @ThreadSafe
 public interface Engine extends IndexShardComponent, CloseableComponent {
 
+    static ByteSizeValue INACTIVE_SHARD_INDEXING_BUFFER = ByteSizeValue.parseBytesSizeValue("500kb");
+
+    /**
+     * The default suggested refresh interval, -1 to disable it.
+     */
+    TimeValue defaultRefreshInterval();
+
     void updateIndexingBufferSize(ByteSizeValue indexingBufferSize);
+
+    void addFailedEngineListener(FailedEngineListener listener);
 
     /**
      * Starts the Engine.
@@ -94,10 +107,9 @@ public interface Engine extends IndexShardComponent, CloseableComponent {
 
     void recover(RecoveryHandler recoveryHandler) throws EngineException;
 
-    /**
-     * Returns the estimated flushable memory size. Returns <tt>null</tt> if not available.
-     */
-    ByteSizeValue estimateFlushableMemorySize();
+    static interface FailedEngineListener {
+        void onFailedEngine(ShardId shardId, Throwable t);
+    }
 
     /**
      * Recovery allow to start the recovery process. It is built of three phases.
@@ -280,16 +292,31 @@ public interface Engine extends IndexShardComponent, CloseableComponent {
         Origin origin();
     }
 
-    static class Create implements Operation {
+    static interface IndexingOperation extends Operation {
+
+        ParsedDocument parsedDoc();
+
+        Document doc();
+
+        DocumentMapper docMapper();
+    }
+
+    static class Create implements IndexingOperation {
+        private final DocumentMapper docMapper;
         private final Term uid;
         private final ParsedDocument doc;
-        private boolean refresh;
         private long version;
+        private VersionType versionType = VersionType.INTERNAL;
         private Origin origin = Origin.PRIMARY;
 
-        public Create(Term uid, ParsedDocument doc) {
+        public Create(DocumentMapper docMapper, Term uid, ParsedDocument doc) {
+            this.docMapper = docMapper;
             this.uid = uid;
             this.doc = doc;
+        }
+
+        public DocumentMapper docMapper() {
+            return this.docMapper;
         }
 
         @Override public Type opType() {
@@ -334,6 +361,15 @@ public interface Engine extends IndexShardComponent, CloseableComponent {
             return this;
         }
 
+        public VersionType versionType() {
+            return this.versionType;
+        }
+
+        public Create versionType(VersionType versionType) {
+            this.versionType = versionType;
+            return this;
+        }
+
         public String parent() {
             return this.doc.parent();
         }
@@ -350,29 +386,27 @@ public interface Engine extends IndexShardComponent, CloseableComponent {
             return this.doc.source();
         }
 
-        public boolean refresh() {
-            return refresh;
-        }
-
-        public void refresh(boolean refresh) {
-            this.refresh = refresh;
-        }
-
         public UidField uidField() {
             return (UidField) doc().getFieldable(UidFieldMapper.NAME);
         }
     }
 
-    static class Index implements Operation {
+    static class Index implements IndexingOperation {
+        private final DocumentMapper docMapper;
         private final Term uid;
         private final ParsedDocument doc;
-        private boolean refresh;
         private long version;
+        private VersionType versionType = VersionType.INTERNAL;
         private Origin origin = Origin.PRIMARY;
 
-        public Index(Term uid, ParsedDocument doc) {
+        public Index(DocumentMapper docMapper, Term uid, ParsedDocument doc) {
+            this.docMapper = docMapper;
             this.uid = uid;
             this.doc = doc;
+        }
+
+        public DocumentMapper docMapper() {
+            return this.docMapper;
         }
 
         @Override public Type opType() {
@@ -405,6 +439,15 @@ public interface Engine extends IndexShardComponent, CloseableComponent {
             return this.version;
         }
 
+        public Index versionType(VersionType versionType) {
+            this.versionType = versionType;
+            return this;
+        }
+
+        public VersionType versionType() {
+            return this.versionType;
+        }
+
         public Document doc() {
             return this.doc.doc();
         }
@@ -433,14 +476,6 @@ public interface Engine extends IndexShardComponent, CloseableComponent {
             return this.doc.source();
         }
 
-        public boolean refresh() {
-            return refresh;
-        }
-
-        public void refresh(boolean refresh) {
-            this.refresh = refresh;
-        }
-
         public UidField uidField() {
             return (UidField) doc().getFieldable(UidFieldMapper.NAME);
         }
@@ -450,8 +485,8 @@ public interface Engine extends IndexShardComponent, CloseableComponent {
         private final String type;
         private final String id;
         private final Term uid;
-        private boolean refresh;
         private long version;
+        private VersionType versionType = VersionType.INTERNAL;
         private Origin origin = Origin.PRIMARY;
         private boolean notFound;
 
@@ -486,14 +521,6 @@ public interface Engine extends IndexShardComponent, CloseableComponent {
             return this.uid;
         }
 
-        public boolean refresh() {
-            return refresh;
-        }
-
-        public void refresh(boolean refresh) {
-            this.refresh = refresh;
-        }
-
         public Delete version(long version) {
             this.version = version;
             return this;
@@ -501,6 +528,15 @@ public interface Engine extends IndexShardComponent, CloseableComponent {
 
         public long version() {
             return this.version;
+        }
+
+        public Delete versionType(VersionType versionType) {
+            this.versionType = versionType;
+            return this;
+        }
+
+        public VersionType versionType() {
+            return this.versionType;
         }
 
         public boolean notFound() {

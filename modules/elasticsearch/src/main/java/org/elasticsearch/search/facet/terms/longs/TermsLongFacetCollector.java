@@ -22,11 +22,14 @@ package org.elasticsearch.search.facet.terms.longs;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.search.Scorer;
 import org.elasticsearch.ElasticSearchIllegalArgumentException;
+import org.elasticsearch.common.CacheRecycler;
 import org.elasticsearch.common.collect.BoundedTreeSet;
 import org.elasticsearch.common.collect.ImmutableList;
+import org.elasticsearch.common.collect.ImmutableSet;
 import org.elasticsearch.common.thread.ThreadLocals;
 import org.elasticsearch.common.trove.iterator.TLongIntIterator;
 import org.elasticsearch.common.trove.map.hash.TLongIntHashMap;
+import org.elasticsearch.common.trove.set.hash.TLongHashSet;
 import org.elasticsearch.index.cache.field.data.FieldDataCache;
 import org.elasticsearch.index.field.data.FieldDataType;
 import org.elasticsearch.index.field.data.longs.LongFieldData;
@@ -36,12 +39,11 @@ import org.elasticsearch.search.facet.AbstractFacetCollector;
 import org.elasticsearch.search.facet.Facet;
 import org.elasticsearch.search.facet.FacetPhaseExecutionException;
 import org.elasticsearch.search.facet.terms.TermsFacet;
+import org.elasticsearch.search.facet.terms.support.EntryPriorityQueue;
 import org.elasticsearch.search.internal.SearchContext;
 
 import java.io.IOException;
-import java.util.ArrayDeque;
-import java.util.Deque;
-import java.util.Map;
+import java.util.*;
 
 /**
  * @author kimchy (shay.banon)
@@ -74,7 +76,7 @@ public class TermsLongFacetCollector extends AbstractFacetCollector {
     private final SearchScript script;
 
     public TermsLongFacetCollector(String facetName, String fieldName, int size, TermsFacet.ComparatorType comparatorType, boolean allTerms, SearchContext context,
-                                   String scriptLang, String script, Map<String, Object> params) {
+                                   ImmutableSet<String> excluded, String scriptLang, String script, Map<String, Object> params) {
         super(facetName);
         this.fieldDataCache = context.fieldDataCache();
         this.size = size;
@@ -104,10 +106,10 @@ public class TermsLongFacetCollector extends AbstractFacetCollector {
             this.script = null;
         }
 
-        if (this.script == null) {
-            aggregator = new StaticAggregatorValueProc(popFacets());
+        if (this.script == null && excluded.isEmpty()) {
+            aggregator = new StaticAggregatorValueProc(CacheRecycler.popLongIntMap());
         } else {
-            aggregator = new AggregatorValueProc(popFacets(), this.script);
+            aggregator = new AggregatorValueProc(CacheRecycler.popLongIntMap(), excluded, this.script);
         }
 
         if (allTerms) {
@@ -142,35 +144,30 @@ public class TermsLongFacetCollector extends AbstractFacetCollector {
     @Override public Facet facet() {
         TLongIntHashMap facets = aggregator.facets();
         if (facets.isEmpty()) {
-            pushFacets(facets);
+            CacheRecycler.pushLongIntMap(facets);
             return new InternalLongTermsFacet(facetName, comparatorType, size, ImmutableList.<InternalLongTermsFacet.LongEntry>of(), aggregator.missing());
         } else {
-            // we need to fetch facets of "size * numberOfShards" because of problems in how they are distributed across shards
-            BoundedTreeSet<InternalLongTermsFacet.LongEntry> ordered = new BoundedTreeSet<InternalLongTermsFacet.LongEntry>(comparatorType.comparator(), size * numberOfShards);
-            for (TLongIntIterator it = facets.iterator(); it.hasNext();) {
-                it.advance();
-                ordered.add(new InternalLongTermsFacet.LongEntry(it.key(), it.value()));
+            if (size < EntryPriorityQueue.LIMIT) {
+                EntryPriorityQueue ordered = new EntryPriorityQueue(size, comparatorType.comparator());
+                for (TLongIntIterator it = facets.iterator(); it.hasNext();) {
+                    it.advance();
+                    ordered.insertWithOverflow(new InternalLongTermsFacet.LongEntry(it.key(), it.value()));
+                }
+                InternalLongTermsFacet.LongEntry[] list = new InternalLongTermsFacet.LongEntry[ordered.size()];
+                for (int i = ordered.size() - 1; i >= 0; i--) {
+                    list[i] = (InternalLongTermsFacet.LongEntry) ordered.pop();
+                }
+                CacheRecycler.pushLongIntMap(facets);
+                return new InternalLongTermsFacet(facetName, comparatorType, size, Arrays.asList(list), aggregator.missing());
+            } else {
+                BoundedTreeSet<InternalLongTermsFacet.LongEntry> ordered = new BoundedTreeSet<InternalLongTermsFacet.LongEntry>(comparatorType.comparator(), size);
+                for (TLongIntIterator it = facets.iterator(); it.hasNext();) {
+                    it.advance();
+                    ordered.add(new InternalLongTermsFacet.LongEntry(it.key(), it.value()));
+                }
+                CacheRecycler.pushLongIntMap(facets);
+                return new InternalLongTermsFacet(facetName, comparatorType, size, ordered, aggregator.missing());
             }
-            pushFacets(facets);
-            return new InternalLongTermsFacet(facetName, comparatorType, size, ordered, aggregator.missing());
-        }
-    }
-
-    static TLongIntHashMap popFacets() {
-        Deque<TLongIntHashMap> deque = cache.get().get();
-        if (deque.isEmpty()) {
-            deque.add(new TLongIntHashMap());
-        }
-        TLongIntHashMap facets = deque.pollFirst();
-        facets.clear();
-        return facets;
-    }
-
-    static void pushFacets(TLongIntHashMap facets) {
-        facets.clear();
-        Deque<TLongIntHashMap> deque = cache.get().get();
-        if (deque != null) {
-            deque.add(facets);
         }
     }
 
@@ -178,12 +175,25 @@ public class TermsLongFacetCollector extends AbstractFacetCollector {
 
         private final SearchScript script;
 
-        public AggregatorValueProc(TLongIntHashMap facets, SearchScript script) {
+        private final TLongHashSet excluded;
+
+        public AggregatorValueProc(TLongIntHashMap facets, Set<String> excluded, SearchScript script) {
             super(facets);
             this.script = script;
+            if (excluded == null || excluded.isEmpty()) {
+                this.excluded = null;
+            } else {
+                this.excluded = new TLongHashSet(excluded.size());
+                for (String s : excluded) {
+                    this.excluded.add(Long.parseLong(s));
+                }
+            }
         }
 
         @Override public void onValue(int docId, long value) {
+            if (excluded != null && excluded.contains(value)) {
+                return;
+            }
             if (script != null) {
                 script.setNextDocId(docId);
                 script.setNextVar("term", value);

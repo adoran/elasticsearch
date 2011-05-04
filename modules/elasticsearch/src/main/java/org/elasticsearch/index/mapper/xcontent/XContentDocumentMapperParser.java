@@ -132,7 +132,7 @@ public class XContentDocumentMapperParser extends AbstractIndexComponent impleme
 
         XContentMapper.TypeParser.ParserContext parserContext = new XContentMapper.TypeParser.ParserContext(analysisService, typeParsers);
 
-        XContentDocumentMapper.Builder docBuilder = doc(index.name(), (RootObjectMapper.Builder) rootObjectTypeParser.parse(type, mapping, parserContext));
+        XContentDocumentMapper.Builder docBuilder = doc(index.name(), indexSettings, (RootObjectMapper.Builder) rootObjectTypeParser.parse(type, mapping, parserContext));
 
         for (Map.Entry<String, Object> entry : mapping.entrySet()) {
             String fieldName = Strings.toUnderscoreCase(entry.getKey());
@@ -140,6 +140,8 @@ public class XContentDocumentMapperParser extends AbstractIndexComponent impleme
 
             if (SourceFieldMapper.CONTENT_TYPE.equals(fieldName) || "sourceField".equals(fieldName)) {
                 docBuilder.sourceField(parseSourceField((Map<String, Object>) fieldNode, parserContext));
+            } else if (SizeFieldMapper.CONTENT_TYPE.equals(fieldName)) {
+                docBuilder.sizeField(parseSizeField((Map<String, Object>) fieldNode, parserContext));
             } else if (IdFieldMapper.CONTENT_TYPE.equals(fieldName) || "idField".equals(fieldName)) {
                 docBuilder.idField(parseIdField((Map<String, Object>) fieldNode, parserContext));
             } else if (IndexFieldMapper.CONTENT_TYPE.equals(fieldName) || "indexField".equals(fieldName)) {
@@ -219,6 +221,7 @@ public class XContentDocumentMapperParser extends AbstractIndexComponent impleme
         return builder;
     }
 
+    // NOTE, we also parse this in MappingMetaData
     private RoutingFieldMapper.Builder parseRoutingField(Map<String, Object> routingNode, XContentMapper.TypeParser.ParserContext parserContext) {
         RoutingFieldMapper.Builder builder = routing();
         parseField(builder, builder.name, routingNode, parserContext);
@@ -266,6 +269,21 @@ public class XContentDocumentMapperParser extends AbstractIndexComponent impleme
             Object fieldNode = entry.getValue();
             if (fieldName.equals("enabled")) {
                 builder.enabled(nodeBooleanValue(fieldNode));
+            }
+        }
+        return builder;
+    }
+
+    private SizeFieldMapper.Builder parseSizeField(Map<String, Object> node, XContentMapper.TypeParser.ParserContext parserContext) {
+        SizeFieldMapper.Builder builder = new SizeFieldMapper.Builder();
+
+        for (Map.Entry<String, Object> entry : node.entrySet()) {
+            String fieldName = Strings.toUnderscoreCase(entry.getKey());
+            Object fieldNode = entry.getValue();
+            if (fieldName.equals("enabled")) {
+                builder.enabled(nodeBooleanValue(fieldNode));
+            } else if (fieldName.equals("store")) {
+                builder.store(parseStore(fieldName, fieldNode.toString()));
             }
         }
         return builder;

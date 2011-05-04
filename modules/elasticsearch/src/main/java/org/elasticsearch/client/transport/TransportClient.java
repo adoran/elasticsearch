@@ -46,10 +46,12 @@ import org.elasticsearch.client.transport.action.ClientTransportActionModule;
 import org.elasticsearch.client.transport.support.InternalTransportClient;
 import org.elasticsearch.cluster.ClusterNameModule;
 import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.common.CacheRecycler;
 import org.elasticsearch.common.collect.ImmutableList;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.inject.Injector;
 import org.elasticsearch.common.inject.ModulesBuilder;
+import org.elasticsearch.common.io.CachedStreams;
 import org.elasticsearch.common.network.NetworkModule;
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
@@ -229,6 +231,8 @@ public class TransportClient extends AbstractClient {
             // ignore
         }
 
+        CacheRecycler.clear();
+        CachedStreams.clear();
         ThreadLocals.clearReferencesThreadLocals();
     }
 

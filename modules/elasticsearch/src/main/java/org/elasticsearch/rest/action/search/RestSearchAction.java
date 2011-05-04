@@ -25,6 +25,7 @@ import org.elasticsearch.action.search.SearchOperationThreading;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.client.Client;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
@@ -143,6 +144,7 @@ public class RestSearchAction extends BaseRestHandler {
         searchRequest.types(RestActions.splitTypes(request.param("type")));
         searchRequest.queryHint(request.param("query_hint"));
         searchRequest.routing(request.param("routing"));
+        searchRequest.preference(request.param("preference"));
 
         return searchRequest;
     }
@@ -183,7 +185,7 @@ public class RestSearchAction extends BaseRestHandler {
 
         String sField = request.param("fields");
         if (sField != null) {
-            if (sField.length() == 0) {
+            if (!Strings.hasText(sField)) {
                 searchSourceBuilder.noFields();
             } else {
                 String[] sFields = fieldsPattern.split(sField);

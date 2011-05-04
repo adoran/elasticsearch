@@ -34,6 +34,22 @@ public abstract class FilterBuilders {
     }
 
     /**
+     * Creates a new ids filter with the provided doc/mapping type.
+     *
+     * @param type The type
+     */
+    public static IdsFilterBuilder idsFilter(String type) {
+        return new IdsFilterBuilder(type);
+    }
+
+    /**
+     * A filter based on doc/mapping type.
+     */
+    public static TypeFilterBuilder typeFilter(String type) {
+        return new TypeFilterBuilder(type);
+    }
+
+    /**
      * A filter for a field based on a term.
      *
      * @param name  The field name
@@ -268,6 +284,15 @@ public abstract class FilterBuilders {
      */
     public static GeoDistanceFilterBuilder geoDistanceFilter(String name) {
         return new GeoDistanceFilterBuilder(name);
+    }
+
+    /**
+     * A filter to filter based on a specific range from a specific geo location / point.
+     *
+     * @param name The location field name.
+     */
+    public static GeoDistanceRangeFilterBuilder geoDistanceRangeFilter(String name) {
+        return new GeoDistanceRangeFilterBuilder(name);
     }
 
     /**

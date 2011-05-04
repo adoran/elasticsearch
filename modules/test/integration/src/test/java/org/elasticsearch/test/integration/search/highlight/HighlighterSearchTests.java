@@ -68,6 +68,110 @@ public class HighlighterSearchTests extends AbstractNodesTests {
         return client("server1");
     }
 
+    @Test public void testSourceLookupHighlightingUsingPlainHighlighter() throws Exception {
+        try {
+            client.admin().indices().prepareDelete("test").execute().actionGet();
+        } catch (Exception e) {
+            // ignore
+        }
+
+        client.admin().indices().prepareCreate("test").setSettings(ImmutableSettings.settingsBuilder().put("number_of_shards", 2))
+                .addMapping("type1", jsonBuilder().startObject().startObject("type1").startObject("properties")
+                        // we don't store title and don't use term vector, now lets see if it works...
+                        .startObject("title").field("type", "string").field("store", "no").field("term_vector", "no").endObject()
+                        .startObject("attachments").startObject("properties").startObject("body").field("type", "string").field("store", "no").field("term_vector", "no").endObject().endObject().endObject()
+                        .endObject().endObject().endObject())
+                .execute().actionGet();
+
+        for (int i = 0; i < 5; i++) {
+            client.prepareIndex("test", "type1", Integer.toString(i))
+                    .setSource(XContentFactory.jsonBuilder().startObject()
+                            .field("title", "This is a test on the highlighting bug present in elasticsearch")
+                            .startArray("attachments").startObject().field("body", "attachment 1").endObject().startObject().field("body", "attachment 2").endObject().endArray()
+                            .endObject())
+                    .setRefresh(true).execute().actionGet();
+        }
+
+        SearchResponse search = client.prepareSearch()
+                .setQuery(fieldQuery("title", "bug"))
+                .addHighlightedField("title", -1, 0)
+                .execute().actionGet();
+
+        assertThat(search.hits().totalHits(), equalTo(5l));
+        assertThat(search.hits().hits().length, equalTo(5));
+        assertThat(search.getFailedShards(), equalTo(0));
+
+        for (SearchHit hit : search.hits()) {
+            assertThat(hit.highlightFields().get("title").fragments()[0], equalTo("This is a test on the highlighting <em>bug</em> present in elasticsearch"));
+        }
+
+        search = client.prepareSearch()
+                .setQuery(fieldQuery("attachments.body", "attachment"))
+                .addHighlightedField("attachments.body", -1, 0)
+                .execute().actionGet();
+
+        System.out.println(search);
+
+        assertThat(search.hits().totalHits(), equalTo(5l));
+        assertThat(search.hits().hits().length, equalTo(5));
+        assertThat(search.getFailedShards(), equalTo(0));
+
+        for (SearchHit hit : search.hits()) {
+            assertThat(hit.highlightFields().get("attachments.body").fragments()[0], equalTo("<em>attachment</em> 1 <em>attachment</em> 2"));
+        }
+    }
+
+    @Test public void testSourceLookupHighlightingUsingFastVectorHighlighter() throws Exception {
+        try {
+            client.admin().indices().prepareDelete("test").execute().actionGet();
+        } catch (Exception e) {
+            // ignore
+        }
+
+        client.admin().indices().prepareCreate("test").setSettings(ImmutableSettings.settingsBuilder().put("number_of_shards", 2))
+                .addMapping("type1", jsonBuilder().startObject().startObject("type1").startObject("properties")
+                        // we don't store title, now lets see if it works...
+                        .startObject("title").field("type", "string").field("store", "no").field("term_vector", "with_positions_offsets").endObject()
+                        .startObject("attachments").startObject("properties").startObject("body").field("type", "string").field("store", "no").field("term_vector", "with_positions_offsets").endObject().endObject().endObject()
+                        .endObject().endObject().endObject())
+                .execute().actionGet();
+
+        for (int i = 0; i < 5; i++) {
+            client.prepareIndex("test", "type1", Integer.toString(i))
+                    .setSource(XContentFactory.jsonBuilder().startObject()
+                            .field("title", "This is a test on the highlighting bug present in elasticsearch")
+                            .startArray("attachments").startObject().field("body", "attachment 1").endObject().startObject().field("body", "attachment 2").endObject().endArray()
+                            .endObject())
+                    .setRefresh(true).execute().actionGet();
+        }
+
+        SearchResponse search = client.prepareSearch()
+                .setQuery(fieldQuery("title", "bug"))
+                .addHighlightedField("title", -1, 0)
+                .execute().actionGet();
+
+        assertThat(search.hits().totalHits(), equalTo(5l));
+        assertThat(search.hits().hits().length, equalTo(5));
+        assertThat(search.getFailedShards(), equalTo(0));
+
+        for (SearchHit hit : search.hits()) {
+            assertThat(hit.highlightFields().get("title").fragments()[0], equalTo("This is a test on the highlighting <em>bug</em> present in elasticsearch "));
+        }
+
+        search = client.prepareSearch()
+                .setQuery(fieldQuery("attachments.body", "attachment"))
+                .addHighlightedField("attachments.body", -1, 0)
+                .execute().actionGet();
+
+        assertThat(search.hits().totalHits(), equalTo(5l));
+        assertThat(search.hits().hits().length, equalTo(5));
+        assertThat(search.getFailedShards(), equalTo(0));
+
+        for (SearchHit hit : search.hits()) {
+            assertThat(hit.highlightFields().get("attachments.body").fragments()[0], equalTo("<em>attachment</em> 1 <em>attachment</em> 2 "));
+        }
+    }
+
     @Test public void testPlainHighlighter() throws Exception {
         try {
             client.admin().indices().prepareDelete("test").execute().actionGet();
@@ -153,7 +257,8 @@ public class HighlighterSearchTests extends AbstractNodesTests {
         assertThat("Failures " + Arrays.toString(searchResponse.shardFailures()), searchResponse.shardFailures().length, equalTo(0));
         assertThat(searchResponse.hits().totalHits(), equalTo(1l));
 
-        assertThat(searchResponse.hits().getAt(0).highlightFields().get("field1").fragments()[0], equalTo("this is a <xxx>test</xxx>"));
+        // LUCENE 3.1 UPGRADE: Caused adding the space at the end...
+        assertThat(searchResponse.hits().getAt(0).highlightFields().get("field1").fragments()[0], equalTo("this is a <xxx>test</xxx> "));
 
         logger.info("--> searching on _all, highlighting on field1");
         source = searchSource()
@@ -165,7 +270,8 @@ public class HighlighterSearchTests extends AbstractNodesTests {
         assertThat("Failures " + Arrays.toString(searchResponse.shardFailures()), searchResponse.shardFailures().length, equalTo(0));
         assertThat(searchResponse.hits().totalHits(), equalTo(1l));
 
-        assertThat(searchResponse.hits().getAt(0).highlightFields().get("field1").fragments()[0], equalTo("this is a <xxx>test</xxx>"));
+        // LUCENE 3.1 UPGRADE: Caused adding the space at the end...
+        assertThat(searchResponse.hits().getAt(0).highlightFields().get("field1").fragments()[0], equalTo("this is a <xxx>test</xxx> "));
 
         logger.info("--> searching on _all, highlighting on field2");
         source = searchSource()
@@ -177,7 +283,8 @@ public class HighlighterSearchTests extends AbstractNodesTests {
         assertThat("Failures " + Arrays.toString(searchResponse.shardFailures()), searchResponse.shardFailures().length, equalTo(0));
         assertThat(searchResponse.hits().totalHits(), equalTo(1l));
 
-        assertThat(searchResponse.hits().getAt(0).highlightFields().get("field2").fragments()[0], equalTo("The <xxx>quick</xxx> brown fox jumps over the lazy dog"));
+        // LUCENE 3.1 UPGRADE: Caused adding the space at the end...
+        assertThat(searchResponse.hits().getAt(0).highlightFields().get("field2").fragments()[0], equalTo("The <xxx>quick</xxx> brown fox jumps over the lazy dog "));
 
         logger.info("--> searching on _all, highlighting on field2");
         source = searchSource()
@@ -189,7 +296,8 @@ public class HighlighterSearchTests extends AbstractNodesTests {
         assertThat("Failures " + Arrays.toString(searchResponse.shardFailures()), searchResponse.shardFailures().length, equalTo(0));
         assertThat(searchResponse.hits().totalHits(), equalTo(1l));
 
-        assertThat(searchResponse.hits().getAt(0).highlightFields().get("field2").fragments()[0], equalTo("The <xxx>quick</xxx> brown fox jumps over the lazy dog"));
+        // LUCENE 3.1 UPGRADE: Caused adding the space at the end...
+        assertThat(searchResponse.hits().getAt(0).highlightFields().get("field2").fragments()[0], equalTo("The <xxx>quick</xxx> brown fox jumps over the lazy dog "));
     }
 
     @Test public void testFastVectorHighlighterManyDocs() throws Exception {
@@ -222,7 +330,8 @@ public class HighlighterSearchTests extends AbstractNodesTests {
         assertThat(searchResponse.hits().totalHits(), equalTo((long) COUNT));
         assertThat(searchResponse.hits().hits().length, equalTo(COUNT));
         for (SearchHit hit : searchResponse.hits()) {
-            assertThat(hit.highlightFields().get("field1").fragments()[0], equalTo("<em>test</em> " + hit.id()));
+            // LUCENE 3.1 UPGRADE: Caused adding the space at the end...
+            assertThat(hit.highlightFields().get("field1").fragments()[0], equalTo("<em>test</em> " + hit.id() + " "));
         }
 
         logger.info("--> searching explicitly on field1 and highlighting on it, with DFS");
@@ -235,7 +344,8 @@ public class HighlighterSearchTests extends AbstractNodesTests {
         assertThat(searchResponse.hits().totalHits(), equalTo((long) COUNT));
         assertThat(searchResponse.hits().hits().length, equalTo(COUNT));
         for (SearchHit hit : searchResponse.hits()) {
-            assertThat(hit.highlightFields().get("field1").fragments()[0], equalTo("<em>test</em> " + hit.id()));
+            // LUCENE 3.1 UPGRADE: Caused adding the space at the end...
+            assertThat(hit.highlightFields().get("field1").fragments()[0], equalTo("<em>test</em> " + hit.id() + " "));
         }
 
         logger.info("--> searching explicitly _all and highlighting on _all");
@@ -247,7 +357,8 @@ public class HighlighterSearchTests extends AbstractNodesTests {
         assertThat(searchResponse.hits().totalHits(), equalTo((long) COUNT));
         assertThat(searchResponse.hits().hits().length, equalTo(COUNT));
         for (SearchHit hit : searchResponse.hits()) {
-            assertThat(hit.highlightFields().get("_all").fragments()[0], equalTo("<em>test</em> " + hit.id() + " "));
+            // LUCENE 3.1 UPGRADE: Caused adding the space at the end...
+            assertThat(hit.highlightFields().get("_all").fragments()[0], equalTo("<em>test</em> " + hit.id() + "  "));
         }
     }
 
@@ -285,9 +396,12 @@ public class HighlighterSearchTests extends AbstractNodesTests {
                 .execute().actionGet();
 
         assertThat(search.hits().totalHits(), equalTo(5l));
+        assertThat(search.hits().hits().length, equalTo(5));
+        assertThat(search.getFailedShards(), equalTo(0));
 
         for (SearchHit hit : search.hits()) {
-            assertThat(hit.highlightFields().get("title").fragments()[0], equalTo("This is a test on the highlighting <em>bug</em> present in elasticsearch"));
+            // LUCENE 3.1 UPGRADE: Caused adding the space at the end...
+            assertThat(hit.highlightFields().get("title").fragments()[0], equalTo("This is a test on the highlighting <em>bug</em> present in elasticsearch "));
         }
     }
 }

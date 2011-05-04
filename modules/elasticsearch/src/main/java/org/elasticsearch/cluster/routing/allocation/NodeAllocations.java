@@ -42,6 +42,8 @@ public class NodeAllocations extends NodeAllocation {
                 .add(new ReplicaAfterPrimaryActiveNodeAllocation(settings))
                 .add(new ThrottlingNodeAllocation(settings))
                 .add(new RebalanceOnlyWhenActiveNodeAllocation(settings))
+                .add(new ClusterRebalanceNodeAllocation(settings))
+                .add(new ConcurrentRebalanceNodeAllocation(settings))
                 .build()
         );
     }
@@ -82,6 +84,11 @@ public class NodeAllocations extends NodeAllocation {
 
     @Override public Decision canAllocate(ShardRouting shardRouting, RoutingNode node, RoutingAllocation allocation) {
         Decision ret = Decision.YES;
+        // first, check if its in the ignored, if so, return NO
+        if (allocation.shouldIgnoreShardForNode(shardRouting.shardId(), node.nodeId())) {
+            return Decision.NO;
+        }
+        // now, go over the registered allocations
         for (NodeAllocation allocation1 : allocations) {
             Decision decision = allocation1.canAllocate(shardRouting, node, allocation);
             if (decision == Decision.NO) {

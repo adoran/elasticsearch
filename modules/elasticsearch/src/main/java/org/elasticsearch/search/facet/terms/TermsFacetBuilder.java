@@ -39,13 +39,14 @@ public class TermsFacetBuilder extends AbstractFacetBuilder {
     private String[] fieldsNames;
     private int size = 10;
     private Boolean allTerms;
-    private String[] exclude;
+    private Object[] exclude;
     private String regex;
     private int regexFlags = 0;
     private TermsFacet.ComparatorType comparatorType;
     private String script;
     private String lang;
     private Map<String, Object> params;
+    String executionHint;
 
     /**
      * Construct a new term facet with the provided facet name.
@@ -110,7 +111,7 @@ public class TermsFacetBuilder extends AbstractFacetBuilder {
     /**
      * A set of terms that will be excluded.
      */
-    public TermsFacetBuilder exclude(String... exclude) {
+    public TermsFacetBuilder exclude(Object... exclude) {
         this.exclude = exclude;
         return this;
     }
@@ -164,6 +165,14 @@ public class TermsFacetBuilder extends AbstractFacetBuilder {
     }
 
     /**
+     * An execution hint to how the facet is computed.
+     */
+    public TermsFacetBuilder executionHint(String executionHint) {
+        this.executionHint = executionHint;
+        return this;
+    }
+
+    /**
      * A parameter that will be passed to the script.
      *
      * @param name  The name of the script parameter.
@@ -205,7 +214,7 @@ public class TermsFacetBuilder extends AbstractFacetBuilder {
         builder.field("size", size);
         if (exclude != null) {
             builder.startArray("exclude");
-            for (String ex : exclude) {
+            for (Object ex : exclude) {
                 builder.value(ex);
             }
             builder.endArray();
@@ -231,6 +240,10 @@ public class TermsFacetBuilder extends AbstractFacetBuilder {
             if (this.params != null) {
                 builder.field("params", this.params);
             }
+        }
+
+        if (executionHint != null) {
+            builder.field("execution_hint", executionHint);
         }
 
         builder.endObject();

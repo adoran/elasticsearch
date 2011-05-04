@@ -223,6 +223,7 @@ public class IndexQueryParserModule extends AbstractModule {
             bindings.processXContentQueryParser(HasChildQueryParser.NAME, HasChildQueryParser.class);
             bindings.processXContentQueryParser(TopChildrenQueryParser.NAME, TopChildrenQueryParser.class);
             bindings.processXContentQueryParser(DisMaxQueryParser.NAME, DisMaxQueryParser.class);
+            bindings.processXContentQueryParser(IdsQueryParser.NAME, IdsQueryParser.class);
             bindings.processXContentQueryParser(MatchAllQueryParser.NAME, MatchAllQueryParser.class);
             bindings.processXContentQueryParser(QueryStringQueryParser.NAME, QueryStringQueryParser.class);
             bindings.processXContentQueryParser(BoostingQueryParser.NAME, BoostingQueryParser.class);
@@ -251,6 +252,8 @@ public class IndexQueryParserModule extends AbstractModule {
 
         @Override public void processXContentFilterParsers(XContentFilterParsersBindings bindings) {
             bindings.processXContentQueryFilter(HasChildFilterParser.NAME, HasChildFilterParser.class);
+            bindings.processXContentQueryFilter(TypeFilterParser.NAME, TypeFilterParser.class);
+            bindings.processXContentQueryFilter(IdsFilterParser.NAME, IdsFilterParser.class);
             bindings.processXContentQueryFilter(TermFilterParser.NAME, TermFilterParser.class);
             bindings.processXContentQueryFilter(TermsFilterParser.NAME, TermsFilterParser.class);
             bindings.processXContentQueryFilter(RangeFilterParser.NAME, RangeFilterParser.class);
@@ -258,6 +261,7 @@ public class IndexQueryParserModule extends AbstractModule {
             bindings.processXContentQueryFilter(PrefixFilterParser.NAME, PrefixFilterParser.class);
             bindings.processXContentQueryFilter(ScriptFilterParser.NAME, ScriptFilterParser.class);
             bindings.processXContentQueryFilter(GeoDistanceFilterParser.NAME, GeoDistanceFilterParser.class);
+            bindings.processXContentQueryFilter(GeoDistanceRangeFilterParser.NAME, GeoDistanceRangeFilterParser.class);
             bindings.processXContentQueryFilter(GeoBoundingBoxFilterParser.NAME, GeoBoundingBoxFilterParser.class);
             bindings.processXContentQueryFilter(GeoPolygonFilterParser.NAME, GeoPolygonFilterParser.class);
             bindings.processXContentQueryFilter(QueryFilterParser.NAME, QueryFilterParser.class);

@@ -22,11 +22,13 @@ package org.elasticsearch.search.facet.terms.ints;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.search.Scorer;
 import org.elasticsearch.ElasticSearchIllegalArgumentException;
+import org.elasticsearch.common.CacheRecycler;
 import org.elasticsearch.common.collect.BoundedTreeSet;
 import org.elasticsearch.common.collect.ImmutableList;
-import org.elasticsearch.common.thread.ThreadLocals;
+import org.elasticsearch.common.collect.ImmutableSet;
 import org.elasticsearch.common.trove.iterator.TIntIntIterator;
 import org.elasticsearch.common.trove.map.hash.TIntIntHashMap;
+import org.elasticsearch.common.trove.set.hash.TIntHashSet;
 import org.elasticsearch.index.cache.field.data.FieldDataCache;
 import org.elasticsearch.index.field.data.FieldDataType;
 import org.elasticsearch.index.field.data.ints.IntFieldData;
@@ -36,23 +38,18 @@ import org.elasticsearch.search.facet.AbstractFacetCollector;
 import org.elasticsearch.search.facet.Facet;
 import org.elasticsearch.search.facet.FacetPhaseExecutionException;
 import org.elasticsearch.search.facet.terms.TermsFacet;
+import org.elasticsearch.search.facet.terms.support.EntryPriorityQueue;
 import org.elasticsearch.search.internal.SearchContext;
 
 import java.io.IOException;
-import java.util.ArrayDeque;
-import java.util.Deque;
+import java.util.Arrays;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * @author kimchy (shay.banon)
  */
 public class TermsIntFacetCollector extends AbstractFacetCollector {
-
-    static ThreadLocal<ThreadLocals.CleanableValue<Deque<TIntIntHashMap>>> cache = new ThreadLocal<ThreadLocals.CleanableValue<Deque<TIntIntHashMap>>>() {
-        @Override protected ThreadLocals.CleanableValue<Deque<TIntIntHashMap>> initialValue() {
-            return new ThreadLocals.CleanableValue<Deque<TIntIntHashMap>>(new ArrayDeque<TIntIntHashMap>());
-        }
-    };
 
     private final FieldDataCache fieldDataCache;
 
@@ -73,7 +70,7 @@ public class TermsIntFacetCollector extends AbstractFacetCollector {
     private final SearchScript script;
 
     public TermsIntFacetCollector(String facetName, String fieldName, int size, TermsFacet.ComparatorType comparatorType, boolean allTerms, SearchContext context,
-                                  String scriptLang, String script, Map<String, Object> params) {
+                                  ImmutableSet<String> excluded, String scriptLang, String script, Map<String, Object> params) {
         super(facetName);
         this.fieldDataCache = context.fieldDataCache();
         this.size = size;
@@ -103,10 +100,10 @@ public class TermsIntFacetCollector extends AbstractFacetCollector {
             this.script = null;
         }
 
-        if (this.script == null) {
-            aggregator = new StaticAggregatorValueProc(popFacets());
+        if (this.script == null && excluded.isEmpty()) {
+            aggregator = new StaticAggregatorValueProc(CacheRecycler.popIntIntMap());
         } else {
-            aggregator = new AggregatorValueProc(popFacets(), this.script);
+            aggregator = new AggregatorValueProc(CacheRecycler.popIntIntMap(), excluded, this.script);
         }
 
         if (allTerms) {
@@ -141,35 +138,30 @@ public class TermsIntFacetCollector extends AbstractFacetCollector {
     @Override public Facet facet() {
         TIntIntHashMap facets = aggregator.facets();
         if (facets.isEmpty()) {
-            pushFacets(facets);
+            CacheRecycler.pushIntIntMap(facets);
             return new InternalIntTermsFacet(facetName, comparatorType, size, ImmutableList.<InternalIntTermsFacet.IntEntry>of(), aggregator.missing());
         } else {
-            // we need to fetch facets of "size * numberOfShards" because of problems in how they are distributed across shards
-            BoundedTreeSet<InternalIntTermsFacet.IntEntry> ordered = new BoundedTreeSet<InternalIntTermsFacet.IntEntry>(comparatorType.comparator(), size * numberOfShards);
-            for (TIntIntIterator it = facets.iterator(); it.hasNext();) {
-                it.advance();
-                ordered.add(new InternalIntTermsFacet.IntEntry(it.key(), it.value()));
+            if (size < EntryPriorityQueue.LIMIT) {
+                EntryPriorityQueue ordered = new EntryPriorityQueue(size, comparatorType.comparator());
+                for (TIntIntIterator it = facets.iterator(); it.hasNext();) {
+                    it.advance();
+                    ordered.insertWithOverflow(new InternalIntTermsFacet.IntEntry(it.key(), it.value()));
+                }
+                InternalIntTermsFacet.IntEntry[] list = new InternalIntTermsFacet.IntEntry[ordered.size()];
+                for (int i = ordered.size() - 1; i >= 0; i--) {
+                    list[i] = (InternalIntTermsFacet.IntEntry) ordered.pop();
+                }
+                CacheRecycler.pushIntIntMap(facets);
+                return new InternalIntTermsFacet(facetName, comparatorType, size, Arrays.asList(list), aggregator.missing());
+            } else {
+                BoundedTreeSet<InternalIntTermsFacet.IntEntry> ordered = new BoundedTreeSet<InternalIntTermsFacet.IntEntry>(comparatorType.comparator(), size);
+                for (TIntIntIterator it = facets.iterator(); it.hasNext();) {
+                    it.advance();
+                    ordered.add(new InternalIntTermsFacet.IntEntry(it.key(), it.value()));
+                }
+                CacheRecycler.pushIntIntMap(facets);
+                return new InternalIntTermsFacet(facetName, comparatorType, size, ordered, aggregator.missing());
             }
-            pushFacets(facets);
-            return new InternalIntTermsFacet(facetName, comparatorType, size, ordered, aggregator.missing());
-        }
-    }
-
-    static TIntIntHashMap popFacets() {
-        Deque<TIntIntHashMap> deque = cache.get().get();
-        if (deque.isEmpty()) {
-            deque.add(new TIntIntHashMap());
-        }
-        TIntIntHashMap facets = deque.pollFirst();
-        facets.clear();
-        return facets;
-    }
-
-    static void pushFacets(TIntIntHashMap facets) {
-        facets.clear();
-        Deque<TIntIntHashMap> deque = cache.get().get();
-        if (deque != null) {
-            deque.add(facets);
         }
     }
 
@@ -177,12 +169,25 @@ public class TermsIntFacetCollector extends AbstractFacetCollector {
 
         private final SearchScript script;
 
-        public AggregatorValueProc(TIntIntHashMap facets, SearchScript script) {
+        private final TIntHashSet excluded;
+
+        public AggregatorValueProc(TIntIntHashMap facets, Set<String> excluded, SearchScript script) {
             super(facets);
+            if (excluded == null || excluded.isEmpty()) {
+                this.excluded = null;
+            } else {
+                this.excluded = new TIntHashSet(excluded.size());
+                for (String s : excluded) {
+                    this.excluded.add(Integer.parseInt(s));
+                }
+            }
             this.script = script;
         }
 
         @Override public void onValue(int docId, int value) {
+            if (excluded != null && excluded.contains(value)) {
+                return;
+            }
             if (script != null) {
                 script.setNextDocId(docId);
                 script.setNextVar("term", value);

@@ -22,11 +22,13 @@ package org.elasticsearch.search.facet.terms.doubles;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.search.Scorer;
 import org.elasticsearch.ElasticSearchIllegalArgumentException;
+import org.elasticsearch.common.CacheRecycler;
 import org.elasticsearch.common.collect.BoundedTreeSet;
 import org.elasticsearch.common.collect.ImmutableList;
-import org.elasticsearch.common.thread.ThreadLocals;
+import org.elasticsearch.common.collect.ImmutableSet;
 import org.elasticsearch.common.trove.iterator.TDoubleIntIterator;
 import org.elasticsearch.common.trove.map.hash.TDoubleIntHashMap;
+import org.elasticsearch.common.trove.set.hash.TDoubleHashSet;
 import org.elasticsearch.index.cache.field.data.FieldDataCache;
 import org.elasticsearch.index.field.data.FieldDataType;
 import org.elasticsearch.index.field.data.doubles.DoubleFieldData;
@@ -36,23 +38,18 @@ import org.elasticsearch.search.facet.AbstractFacetCollector;
 import org.elasticsearch.search.facet.Facet;
 import org.elasticsearch.search.facet.FacetPhaseExecutionException;
 import org.elasticsearch.search.facet.terms.TermsFacet;
+import org.elasticsearch.search.facet.terms.support.EntryPriorityQueue;
 import org.elasticsearch.search.internal.SearchContext;
 
 import java.io.IOException;
-import java.util.ArrayDeque;
-import java.util.Deque;
+import java.util.Arrays;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * @author kimchy (shay.banon)
  */
 public class TermsDoubleFacetCollector extends AbstractFacetCollector {
-
-    static ThreadLocal<ThreadLocals.CleanableValue<Deque<TDoubleIntHashMap>>> cache = new ThreadLocal<ThreadLocals.CleanableValue<Deque<TDoubleIntHashMap>>>() {
-        @Override protected ThreadLocals.CleanableValue<Deque<TDoubleIntHashMap>> initialValue() {
-            return new ThreadLocals.CleanableValue<Deque<TDoubleIntHashMap>>(new ArrayDeque<TDoubleIntHashMap>());
-        }
-    };
 
     private final FieldDataCache fieldDataCache;
 
@@ -73,7 +70,7 @@ public class TermsDoubleFacetCollector extends AbstractFacetCollector {
     private final SearchScript script;
 
     public TermsDoubleFacetCollector(String facetName, String fieldName, int size, TermsFacet.ComparatorType comparatorType, boolean allTerms, SearchContext context,
-                                     String scriptLang, String script, Map<String, Object> params) {
+                                     ImmutableSet<String> excluded, String scriptLang, String script, Map<String, Object> params) {
         super(facetName);
         this.fieldDataCache = context.fieldDataCache();
         this.size = size;
@@ -103,10 +100,10 @@ public class TermsDoubleFacetCollector extends AbstractFacetCollector {
             this.script = null;
         }
 
-        if (this.script == null) {
-            aggregator = new StaticAggregatorValueProc(popFacets());
+        if (this.script == null && excluded.isEmpty()) {
+            aggregator = new StaticAggregatorValueProc(CacheRecycler.popDoubleIntMap());
         } else {
-            aggregator = new AggregatorValueProc(popFacets(), this.script);
+            aggregator = new AggregatorValueProc(CacheRecycler.popDoubleIntMap(), excluded, this.script);
         }
 
         if (allTerms) {
@@ -141,35 +138,30 @@ public class TermsDoubleFacetCollector extends AbstractFacetCollector {
     @Override public Facet facet() {
         TDoubleIntHashMap facets = aggregator.facets();
         if (facets.isEmpty()) {
-            pushFacets(facets);
+            CacheRecycler.pushDoubleIntMap(facets);
             return new InternalDoubleTermsFacet(facetName, comparatorType, size, ImmutableList.<InternalDoubleTermsFacet.DoubleEntry>of(), aggregator.missing());
         } else {
-            // we need to fetch facets of "size * numberOfShards" because of problems in how they are distributed across shards
-            BoundedTreeSet<InternalDoubleTermsFacet.DoubleEntry> ordered = new BoundedTreeSet<InternalDoubleTermsFacet.DoubleEntry>(comparatorType.comparator(), size * numberOfShards);
-            for (TDoubleIntIterator it = facets.iterator(); it.hasNext();) {
-                it.advance();
-                ordered.add(new InternalDoubleTermsFacet.DoubleEntry(it.key(), it.value()));
+            if (size < EntryPriorityQueue.LIMIT) {
+                EntryPriorityQueue ordered = new EntryPriorityQueue(size, comparatorType.comparator());
+                for (TDoubleIntIterator it = facets.iterator(); it.hasNext();) {
+                    it.advance();
+                    ordered.insertWithOverflow(new InternalDoubleTermsFacet.DoubleEntry(it.key(), it.value()));
+                }
+                InternalDoubleTermsFacet.DoubleEntry[] list = new InternalDoubleTermsFacet.DoubleEntry[ordered.size()];
+                for (int i = ordered.size() - 1; i >= 0; i--) {
+                    list[i] = (InternalDoubleTermsFacet.DoubleEntry) ordered.pop();
+                }
+                CacheRecycler.pushDoubleIntMap(facets);
+                return new InternalDoubleTermsFacet(facetName, comparatorType, size, Arrays.asList(list), aggregator.missing());
+            } else {
+                BoundedTreeSet<InternalDoubleTermsFacet.DoubleEntry> ordered = new BoundedTreeSet<InternalDoubleTermsFacet.DoubleEntry>(comparatorType.comparator(), size);
+                for (TDoubleIntIterator it = facets.iterator(); it.hasNext();) {
+                    it.advance();
+                    ordered.add(new InternalDoubleTermsFacet.DoubleEntry(it.key(), it.value()));
+                }
+                CacheRecycler.pushDoubleIntMap(facets);
+                return new InternalDoubleTermsFacet(facetName, comparatorType, size, ordered, aggregator.missing());
             }
-            pushFacets(facets);
-            return new InternalDoubleTermsFacet(facetName, comparatorType, size, ordered, aggregator.missing());
-        }
-    }
-
-    static TDoubleIntHashMap popFacets() {
-        Deque<TDoubleIntHashMap> deque = cache.get().get();
-        if (deque.isEmpty()) {
-            deque.add(new TDoubleIntHashMap());
-        }
-        TDoubleIntHashMap facets = deque.pollFirst();
-        facets.clear();
-        return facets;
-    }
-
-    static void pushFacets(TDoubleIntHashMap facets) {
-        facets.clear();
-        Deque<TDoubleIntHashMap> deque = cache.get().get();
-        if (deque != null) {
-            deque.add(facets);
         }
     }
 
@@ -177,12 +169,25 @@ public class TermsDoubleFacetCollector extends AbstractFacetCollector {
 
         private final SearchScript script;
 
-        public AggregatorValueProc(TDoubleIntHashMap facets, SearchScript script) {
+        private final TDoubleHashSet excluded;
+
+        public AggregatorValueProc(TDoubleIntHashMap facets, Set<String> excluded, SearchScript script) {
             super(facets);
             this.script = script;
+            if (excluded == null || excluded.isEmpty()) {
+                this.excluded = null;
+            } else {
+                this.excluded = new TDoubleHashSet(excluded.size());
+                for (String s : excluded) {
+                    this.excluded.add(Double.parseDouble(s));
+                }
+            }
         }
 
         @Override public void onValue(int docId, double value) {
+            if (excluded != null && excluded.contains(value)) {
+                return;
+            }
             if (script != null) {
                 script.setNextDocId(docId);
                 script.setNextVar("term", value);

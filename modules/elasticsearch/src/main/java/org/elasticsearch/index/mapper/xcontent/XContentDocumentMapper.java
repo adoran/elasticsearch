@@ -21,17 +21,18 @@ package org.elasticsearch.index.mapper.xcontent;
 
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
 import org.apache.lucene.search.Filter;
+import org.elasticsearch.common.Booleans;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Preconditions;
 import org.elasticsearch.common.collect.ImmutableMap;
 import org.elasticsearch.common.compress.CompressedString;
-import org.elasticsearch.common.compress.lzf.LZFDecoder;
+import org.elasticsearch.common.compress.lzf.LZF;
 import org.elasticsearch.common.io.stream.BytesStreamInput;
 import org.elasticsearch.common.io.stream.CachedStreamInput;
 import org.elasticsearch.common.io.stream.LZFStreamInput;
-import org.elasticsearch.common.lucene.search.TermFilter;
-import org.elasticsearch.common.thread.ThreadLocals;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.*;
 import org.elasticsearch.index.analysis.NamedAnalyzer;
 import org.elasticsearch.index.mapper.*;
@@ -57,6 +58,7 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
         private IndexFieldMapper indexFieldMapper = new IndexFieldMapper();
 
         private SourceFieldMapper sourceFieldMapper = new SourceFieldMapper();
+        private SizeFieldMapper sizeFieldMapper = new SizeFieldMapper();
 
         private RoutingFieldMapper routingFieldMapper = new RoutingFieldMapper();
 
@@ -80,9 +82,15 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
 
         private XContentMapper.BuilderContext builderContext = new XContentMapper.BuilderContext(new ContentPath(1));
 
-        public Builder(String index, RootObjectMapper.Builder builder) {
+        public Builder(String index, @Nullable Settings indexSettings, RootObjectMapper.Builder builder) {
             this.index = index;
             this.rootObjectMapper = builder.build(builderContext);
+            if (indexSettings != null) {
+                String idIndexed = indexSettings.get("index.mapping._id.indexed");
+                if (idIndexed != null && Booleans.parseBoolean(idIndexed, false)) {
+                    idFieldMapper = new IdFieldMapper(Field.Index.NOT_ANALYZED);
+                }
+            }
         }
 
         public Builder meta(ImmutableMap<String, Object> meta) {
@@ -92,6 +100,11 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
 
         public Builder sourceField(SourceFieldMapper.Builder builder) {
             this.sourceFieldMapper = builder.build(builderContext);
+            return this;
+        }
+
+        public Builder sizeField(SizeFieldMapper.Builder builder) {
+            this.sizeFieldMapper = builder.build(builderContext);
             return this;
         }
 
@@ -161,14 +174,14 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
         public XContentDocumentMapper build(XContentDocumentMapperParser docMapperParser) {
             Preconditions.checkNotNull(rootObjectMapper, "Mapper builder must have the root object mapper set");
             return new XContentDocumentMapper(index, docMapperParser, rootObjectMapper, meta, uidFieldMapper, idFieldMapper, typeFieldMapper, indexFieldMapper,
-                    sourceFieldMapper, parentFieldMapper, routingFieldMapper, allFieldMapper, analyzerMapper, indexAnalyzer, searchAnalyzer, boostFieldMapper);
+                    sourceFieldMapper, sizeFieldMapper, parentFieldMapper, routingFieldMapper, allFieldMapper, analyzerMapper, indexAnalyzer, searchAnalyzer, boostFieldMapper);
         }
     }
 
 
-    private ThreadLocal<ThreadLocals.CleanableValue<ParseContext>> cache = new ThreadLocal<ThreadLocals.CleanableValue<ParseContext>>() {
-        @Override protected ThreadLocals.CleanableValue<ParseContext> initialValue() {
-            return new ThreadLocals.CleanableValue<ParseContext>(new ParseContext(index, docMapperParser, XContentDocumentMapper.this, new ContentPath(0)));
+    private ThreadLocal<ParseContext> cache = new ThreadLocal<ParseContext>() {
+        @Override protected ParseContext initialValue() {
+            return new ParseContext(index, docMapperParser, XContentDocumentMapper.this, new ContentPath(0));
         }
     };
 
@@ -191,6 +204,7 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
     private final IndexFieldMapper indexFieldMapper;
 
     private final SourceFieldMapper sourceFieldMapper;
+    private final SizeFieldMapper sizeFieldMapper;
 
     private final RoutingFieldMapper routingFieldMapper;
 
@@ -224,6 +238,7 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
                                   TypeFieldMapper typeFieldMapper,
                                   IndexFieldMapper indexFieldMapper,
                                   SourceFieldMapper sourceFieldMapper,
+                                  SizeFieldMapper sizeFieldMapper,
                                   @Nullable ParentFieldMapper parentFieldMapper,
                                   RoutingFieldMapper routingFieldMapper,
                                   AllFieldMapper allFieldMapper,
@@ -240,6 +255,7 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
         this.typeFieldMapper = typeFieldMapper;
         this.indexFieldMapper = indexFieldMapper;
         this.sourceFieldMapper = sourceFieldMapper;
+        this.sizeFieldMapper = sizeFieldMapper;
         this.parentFieldMapper = parentFieldMapper;
         this.routingFieldMapper = routingFieldMapper;
         this.allFieldMapper = allFieldMapper;
@@ -249,7 +265,7 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
         this.indexAnalyzer = indexAnalyzer;
         this.searchAnalyzer = searchAnalyzer;
 
-        this.typeFilter = new TermFilter(typeMapper().term(type));
+        this.typeFilter = typeMapper().fieldFilter(type);
 
         rootObjectMapper.putMapper(idFieldMapper);
         if (boostFieldMapper != null) {
@@ -269,6 +285,7 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
         }
         tempFieldMappers.add(typeFieldMapper);
         tempFieldMappers.add(sourceFieldMapper);
+        tempFieldMappers.add(sizeFieldMapper);
         tempFieldMappers.add(uidFieldMapper);
         tempFieldMappers.add(allFieldMapper);
         // now traverse and get all the statically defined ones
@@ -364,7 +381,7 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
     }
 
     @Override public ParsedDocument parse(SourceToParse source, @Nullable ParseListener listener) throws MapperParsingException {
-        ParseContext context = cache.get().get();
+        ParseContext context = cache.get();
 
         if (source.type() != null && !source.type().equals(this.type)) {
             throw new MapperParsingException("Type mismatch, provide type [" + source.type() + "] but mapper is of type [" + this.type + "]");
@@ -374,7 +391,7 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
         XContentParser parser = source.parser();
         try {
             if (parser == null) {
-                if (LZFDecoder.isCompressed(source.source())) {
+                if (LZF.isCompressed(source.source())) {
                     BytesStreamInput siBytes = new BytesStreamInput(source.source());
                     LZFStreamInput siLzf = CachedStreamInput.cachedLzf(siBytes);
                     XContentType contentType = XContentFactory.xContentType(siLzf);
@@ -408,6 +425,11 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
 //                if (token != XContentParser.Token.START_OBJECT) {
 //                    throw new MapperException("Malformed content, a field with the same name as the type must be an object with the properties/fields within it");
 //                }
+            }
+
+            if (sizeFieldMapper.enabled()) {
+                context.externalValue(source.source().length);
+                sizeFieldMapper.parse(context);
             }
 
             if (sourceFieldMapper.enabled()) {
@@ -493,6 +515,7 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
                     fieldMapperListener.fieldMapper(indexFieldMapper);
                 }
                 fieldMapperListener.fieldMapper(sourceFieldMapper);
+                fieldMapperListener.fieldMapper(sizeFieldMapper);
                 fieldMapperListener.fieldMapper(typeFieldMapper);
                 fieldMapperListener.fieldMapper(uidFieldMapper);
                 fieldMapperListener.fieldMapper(allFieldMapper);
@@ -505,6 +528,12 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
         XContentDocumentMapper xContentMergeWith = (XContentDocumentMapper) mergeWith;
         MergeContext mergeContext = new MergeContext(this, mergeFlags);
         rootObjectMapper.merge(xContentMergeWith.rootObjectMapper, mergeContext);
+
+        allFieldMapper.merge(xContentMergeWith.allFieldMapper, mergeContext);
+        analyzerMapper.merge(xContentMergeWith.analyzerMapper, mergeContext);
+        sourceFieldMapper.merge(xContentMergeWith.sourceFieldMapper, mergeContext);
+        sizeFieldMapper.merge(xContentMergeWith.sizeFieldMapper, mergeContext);
+
         if (!mergeFlags.simulate()) {
             // let the merge with attributes to override the attributes
             meta = mergeWith.meta();
@@ -524,6 +553,18 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
         } catch (Exception e) {
             throw new FailedToGenerateSourceMapperException(e.getMessage(), e);
         }
+    }
+
+    @Override public void close() {
+        cache.remove();
+        rootObjectMapper.close();
+        idFieldMapper.close();
+        indexFieldMapper.close();
+        typeFieldMapper.close();
+        allFieldMapper.close();
+        analyzerMapper.close();
+        sourceFieldMapper.close();
+        sizeFieldMapper.close();
     }
 
     @Override public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
@@ -554,7 +595,7 @@ public class XContentDocumentMapper implements DocumentMapper, ToXContent {
             }
             // no need to pass here id and boost, since they are added to the root object mapper
             // in the constructor
-        }, indexFieldMapper, typeFieldMapper, allFieldMapper, analyzerMapper, sourceFieldMapper);
+        }, indexFieldMapper, typeFieldMapper, allFieldMapper, analyzerMapper, sourceFieldMapper, sizeFieldMapper);
         return builder;
     }
 }

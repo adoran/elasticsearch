@@ -339,6 +339,21 @@ public class GeoPointFieldMapper implements XContentMapper, ArrayValueMapperPars
         }
     }
 
+    @Override public void close() {
+        if (latMapper != null) {
+            latMapper.close();
+        }
+        if (lonMapper != null) {
+            lonMapper.close();
+        }
+        if (geohashMapper != null) {
+            geohashMapper.close();
+        }
+        if (geoStringMapper != null) {
+            geoStringMapper.close();
+        }
+    }
+
     @Override public void merge(XContentMapper mergeWith, MergeContext mergeContext) throws MergeMappingException {
         // TODO
     }

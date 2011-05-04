@@ -36,9 +36,9 @@ public class ScriptStatisticalFacetCollector extends AbstractFacetCollector {
 
     private final SearchScript script;
 
-    private double min = Double.NaN;
+    private double min = Double.POSITIVE_INFINITY;
 
-    private double max = Double.NaN;
+    private double max = Double.NEGATIVE_INFINITY;
 
     private double total = 0;
 
@@ -54,10 +54,10 @@ public class ScriptStatisticalFacetCollector extends AbstractFacetCollector {
     @Override protected void doCollect(int doc) throws IOException {
         script.setNextDocId(doc);
         double value = script.runAsDouble();
-        if (value < min || Double.isNaN(min)) {
+        if (value < min) {
             min = value;
         }
-        if (value > max || Double.isNaN(max)) {
+        if (value > max) {
             max = value;
         }
         sumOfSquares += value * value;

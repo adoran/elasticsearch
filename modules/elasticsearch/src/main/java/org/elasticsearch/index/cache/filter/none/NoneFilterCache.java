@@ -50,10 +50,6 @@ public class NoneFilterCache extends AbstractIndexComponent implements FilterCac
         return filterToCache;
     }
 
-    @Override public Filter weakCache(Filter filterToCache) {
-        return filterToCache;
-    }
-
     @Override public boolean isCached(Filter filter) {
         return false;
     }
@@ -66,11 +62,19 @@ public class NoneFilterCache extends AbstractIndexComponent implements FilterCac
         // nothing to do here
     }
 
-    @Override public void clearUnreferenced() {
-        // nothing to do here
+    @Override public long count() {
+        return 0;
     }
 
     @Override public long sizeInBytes() {
+        return 0;
+    }
+
+    @Override public long evictions() {
+        return 0;
+    }
+
+    @Override public long memEvictions() {
         return 0;
     }
 }

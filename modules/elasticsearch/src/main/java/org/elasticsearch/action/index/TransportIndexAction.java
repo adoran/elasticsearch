@@ -42,7 +42,6 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.engine.Engine;
 import org.elasticsearch.index.mapper.DocumentMapper;
 import org.elasticsearch.index.mapper.MapperService;
-import org.elasticsearch.index.mapper.ParsedDocument;
 import org.elasticsearch.index.mapper.SourceToParse;
 import org.elasticsearch.index.percolator.PercolatorExecutor;
 import org.elasticsearch.index.service.IndexService;
@@ -174,40 +173,50 @@ public class TransportIndexAction extends TransportShardReplicationOperationActi
         IndexShard indexShard = indexShard(shardRequest);
         SourceToParse sourceToParse = SourceToParse.source(request.source()).type(request.type()).id(request.id())
                 .routing(request.routing()).parent(request.parent());
-        ParsedDocument doc;
         long version;
+        Engine.IndexingOperation op;
         if (request.opType() == IndexRequest.OpType.INDEX) {
             Engine.Index index = indexShard.prepareIndex(sourceToParse)
                     .version(request.version())
+                    .versionType(request.versionType())
                     .origin(Engine.Operation.Origin.PRIMARY);
-            index.refresh(request.refresh());
-            doc = indexShard.index(index);
+            indexShard.index(index);
             version = index.version();
+            op = index;
         } else {
             Engine.Create create = indexShard.prepareCreate(sourceToParse)
                     .version(request.version())
+                    .versionType(request.versionType())
                     .origin(Engine.Operation.Origin.PRIMARY);
-            create.refresh(request.refresh());
-            doc = indexShard.create(create);
+            indexShard.create(create);
             version = create.version();
+            op = create;
         }
-        if (doc.mappersAdded()) {
+        if (request.refresh()) {
+            try {
+                indexShard.refresh(new Engine.Refresh(false));
+            } catch (Exception e) {
+                // ignore
+            }
+        }
+        if (op.parsedDoc().mappersAdded()) {
             updateMappingOnMaster(request);
         }
         // update the version on the request, so it will be used for the replicas
         request.version(version);
 
         IndexResponse response = new IndexResponse(request.index(), request.type(), request.id(), version);
-        return new PrimaryResponse<IndexResponse>(response, doc);
+        return new PrimaryResponse<IndexResponse>(response, op);
     }
 
     @Override protected void postPrimaryOperation(IndexRequest request, PrimaryResponse<IndexResponse> response) {
+        Engine.IndexingOperation op = (Engine.IndexingOperation) response.payload();
         if (!Strings.hasLength(request.percolate())) {
             return;
         }
         IndexService indexService = indicesService.indexServiceSafe(request.index());
         try {
-            PercolatorExecutor.Response percolate = indexService.percolateService().percolate(new PercolatorExecutor.DocAndSourceQueryRequest((ParsedDocument) response.payload(), request.percolate()));
+            PercolatorExecutor.Response percolate = indexService.percolateService().percolate(new PercolatorExecutor.DocAndSourceQueryRequest(op.parsedDoc(), request.percolate()));
             response.response().matches(percolate.matches());
         } catch (Exception e) {
             logger.warn("failed to percolate [{}]", e, request);
@@ -223,14 +232,19 @@ public class TransportIndexAction extends TransportShardReplicationOperationActi
             Engine.Index index = indexShard.prepareIndex(sourceToParse)
                     .version(request.version())
                     .origin(Engine.Operation.Origin.REPLICA);
-            index.refresh(request.refresh());
             indexShard.index(index);
         } else {
             Engine.Create create = indexShard.prepareCreate(sourceToParse)
                     .version(request.version())
                     .origin(Engine.Operation.Origin.REPLICA);
-            create.refresh(request.refresh());
             indexShard.create(create);
+        }
+        if (request.refresh()) {
+            try {
+                indexShard.refresh(new Engine.Refresh(false));
+            } catch (Exception e) {
+                // ignore
+            }
         }
     }
 

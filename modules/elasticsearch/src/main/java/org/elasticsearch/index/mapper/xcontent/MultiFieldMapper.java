@@ -171,6 +171,12 @@ public class MultiFieldMapper implements XContentMapper, IncludeInAllMapper {
         }
     }
 
+    @Override public void includeInAllIfNotSet(Boolean includeInAll) {
+        if (includeInAll != null && defaultMapper != null && (defaultMapper instanceof IncludeInAllMapper)) {
+            ((IncludeInAllMapper) defaultMapper).includeInAllIfNotSet(includeInAll);
+        }
+    }
+
     public ContentPath.Type pathType() {
         return pathType;
     }
@@ -251,6 +257,15 @@ public class MultiFieldMapper implements XContentMapper, IncludeInAllMapper {
                     }
                 }
             }
+        }
+    }
+
+    @Override public void close() {
+        if (defaultMapper != null) {
+            defaultMapper.close();
+        }
+        for (XContentMapper mapper : mappers.values()) {
+            mapper.close();
         }
     }
 

@@ -19,9 +19,9 @@
 
 package org.elasticsearch.cluster.metadata;
 
-import org.elasticsearch.ElasticSearchIllegalArgumentException;
 import org.elasticsearch.cluster.*;
 import org.elasticsearch.cluster.routing.RoutingTable;
+import org.elasticsearch.common.Booleans;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.ImmutableSettings;
@@ -52,17 +52,23 @@ public class MetaDataUpdateSettingsService extends AbstractComponent implements 
         // TODO we only need to do that on first create of an index, or the number of nodes changed
         for (final IndexMetaData indexMetaData : event.state().metaData()) {
             String autoExpandReplicas = indexMetaData.settings().get(IndexMetaData.SETTING_AUTO_EXPAND_REPLICAS);
-            if (autoExpandReplicas != null) {
+            if (autoExpandReplicas != null && Booleans.parseBoolean(autoExpandReplicas, true)) { // Booleans only work for false values, just as we want it here
                 try {
                     final int numberOfReplicas = event.state().nodes().dataNodes().size() - 1;
 
-                    int min = Integer.parseInt(autoExpandReplicas.substring(0, autoExpandReplicas.indexOf('-')));
+                    int min;
                     int max;
-                    String sMax = autoExpandReplicas.substring(autoExpandReplicas.indexOf('-') + 1);
-                    if (sMax.equals("all")) {
-                        max = event.state().nodes().dataNodes().size() - 1;
-                    } else {
-                        max = Integer.parseInt(sMax);
+                    try {
+                        min = Integer.parseInt(autoExpandReplicas.substring(0, autoExpandReplicas.indexOf('-')));
+                        String sMax = autoExpandReplicas.substring(autoExpandReplicas.indexOf('-') + 1);
+                        if (sMax.equals("all")) {
+                            max = event.state().nodes().dataNodes().size() - 1;
+                        } else {
+                            max = Integer.parseInt(sMax);
+                        }
+                    } catch (Exception e) {
+                        logger.warn("failed to set [{}], wrong format [{}]", e, IndexMetaData.SETTING_AUTO_EXPAND_REPLICAS, autoExpandReplicas);
+                        continue;
                     }
 
                     // same value, nothing to do there
@@ -102,7 +108,6 @@ public class MetaDataUpdateSettingsService extends AbstractComponent implements 
         clusterService.submitStateUpdateTask("update-settings", new ProcessedClusterStateUpdateTask() {
             @Override public ClusterState execute(ClusterState currentState) {
                 try {
-                    boolean changed = false;
                     String[] actualIndices = currentState.metaData().concreteIndices(indices);
                     RoutingTable.Builder routingTableBuilder = newRoutingTableBuilder().routingTable(currentState.routingTable());
                     MetaData.Builder metaDataBuilder = MetaData.newMetaDataBuilder().metaData(currentState.metaData());
@@ -111,15 +116,10 @@ public class MetaDataUpdateSettingsService extends AbstractComponent implements 
                     if (updatedNumberOfReplicas != -1) {
                         routingTableBuilder.updateNumberOfReplicas(updatedNumberOfReplicas, actualIndices);
                         metaDataBuilder.updateNumberOfReplicas(updatedNumberOfReplicas, actualIndices);
-                        changed = true;
+                        logger.info("Updating number_of_replicas to [{}] for indices {}", updatedNumberOfReplicas, actualIndices);
                     }
 
-                    if (!changed) {
-                        listener.onFailure(new ElasticSearchIllegalArgumentException("No settings applied"));
-                        return currentState;
-                    }
-
-                    logger.info("Updating number_of_replicas to [{}] for indices {}", updatedNumberOfReplicas, actualIndices);
+                    metaDataBuilder.updateSettings(settings, actualIndices);
 
                     return ClusterState.builder().state(currentState).metaData(metaDataBuilder).routingTable(routingTableBuilder).build();
                 } catch (Exception e) {

@@ -23,6 +23,7 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.store.RAMDirectory;
 import org.elasticsearch.common.lucene.Lucene;
@@ -37,35 +38,45 @@ import static org.hamcrest.Matchers.*;
 public class UidFieldTests {
 
     @Test public void testUidField() throws Exception {
-        IndexWriter writer = new IndexWriter(new RAMDirectory(), Lucene.STANDARD_ANALYZER, IndexWriter.MaxFieldLength.UNLIMITED);
+        IndexWriter writer = new IndexWriter(new RAMDirectory(), new IndexWriterConfig(Lucene.VERSION, Lucene.STANDARD_ANALYZER));
 
-        IndexReader reader = writer.getReader();
+        IndexReader reader = IndexReader.open(writer, true);
         assertThat(UidField.loadVersion(reader, new Term("_uid", "1")), equalTo(-1l));
 
         Document doc = new Document();
         doc.add(new Field("_uid", "1", Field.Store.YES, Field.Index.NOT_ANALYZED));
         writer.addDocument(doc);
-        reader = writer.getReader();
+        reader = reader.reopen();
         assertThat(UidField.loadVersion(reader, new Term("_uid", "1")), equalTo(-2l));
         assertThat(UidField.loadDocIdAndVersion(reader, new Term("_uid", "1")).version, equalTo(-2l));
 
         doc = new Document();
         doc.add(new UidField("_uid", "1", 1));
         writer.updateDocument(new Term("_uid", "1"), doc);
-        reader = writer.getReader();
+        reader = reader.reopen();
         assertThat(UidField.loadVersion(reader, new Term("_uid", "1")), equalTo(1l));
         assertThat(UidField.loadDocIdAndVersion(reader, new Term("_uid", "1")).version, equalTo(1l));
 
         doc = new Document();
-        doc.add(new UidField("_uid", "1", 2));
+        UidField uid = new UidField("_uid", "1", 2);
+        doc.add(uid);
         writer.updateDocument(new Term("_uid", "1"), doc);
-        reader = writer.getReader();
+        reader = reader.reopen();
         assertThat(UidField.loadVersion(reader, new Term("_uid", "1")), equalTo(2l));
         assertThat(UidField.loadDocIdAndVersion(reader, new Term("_uid", "1")).version, equalTo(2l));
 
+        // test reuse of uid field
+        doc = new Document();
+        uid.version(3);
+        doc.add(uid);
+        writer.updateDocument(new Term("_uid", "1"), doc);
+        reader = reader.reopen();
+        assertThat(UidField.loadVersion(reader, new Term("_uid", "1")), equalTo(3l));
+        assertThat(UidField.loadDocIdAndVersion(reader, new Term("_uid", "1")).version, equalTo(3l));
+
         writer.deleteDocuments(new Term("_uid", "1"));
-        reader = writer.getReader();
+        reader = reader.reopen();
         assertThat(UidField.loadVersion(reader, new Term("_uid", "1")), equalTo(-1l));
-        assertThat(UidField.loadDocIdAndVersion(reader, new Term("_uid", "1")).version, equalTo(-1l));
+        assertThat(UidField.loadDocIdAndVersion(reader, new Term("_uid", "1")), nullValue());
     }
 }

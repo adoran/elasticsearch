@@ -144,15 +144,24 @@ public class LocalIndexShardGateway extends AbstractIndexShardComponent implemen
         try {
             InputStreamStreamInput si = new InputStreamStreamInput(new FileInputStream(recoveringTranslogFile));
             while (true) {
-                int opSize = si.readInt();
-                Translog.Operation operation = TranslogStreams.readTranslogOperation(si);
+                Translog.Operation operation;
+                try {
+                    int opSize = si.readInt();
+                    operation = TranslogStreams.readTranslogOperation(si);
+                } catch (EOFException e) {
+                    // ignore, not properly written the last op
+                    break;
+                } catch (IOException e) {
+                    // ignore, not properly written last op
+                    break;
+                }
                 recoveryStatus.translog().addTranslogOperations(1);
                 indexShard.performRecoveryOperation(operation);
             }
-        } catch (EOFException e) {
-            // ignore this exception, its fine
-        } catch (IOException e) {
-            // ignore this as well
+        } catch (Throwable e) {
+            // we failed to recovery, make sure to delete the translog file (and keep the recovering one)
+            indexShard.translog().close(true);
+            throw new IndexShardGatewayRecoveryException(shardId, "failed to recover shard", e);
         }
         indexShard.performRecoveryFinalization(true);
 
@@ -175,6 +184,10 @@ public class LocalIndexShardGateway extends AbstractIndexShardComponent implemen
 
     @Override public SnapshotStatus currentSnapshotStatus() {
         return null;
+    }
+
+    @Override public boolean requiresSnapshot() {
+        return false;
     }
 
     @Override public boolean requiresSnapshotScheduling() {

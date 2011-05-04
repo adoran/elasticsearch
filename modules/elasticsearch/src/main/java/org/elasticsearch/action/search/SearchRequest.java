@@ -71,6 +71,7 @@ public class SearchRequest implements ActionRequest {
 
     @Nullable private String queryHint;
     @Nullable private String routing;
+    @Nullable private String preference;
 
     private byte[] source;
     private int sourceOffset;
@@ -221,6 +222,20 @@ public class SearchRequest implements ActionRequest {
     }
 
     /**
+     * Sets the preference to execute the search. Defaults to randomize across shards. Can be set to
+     * <tt>_local</tt> to prefer local shards, <tt>_primary</tt> to execute only on primary shards, or
+     * a custom value, which guarantees that the same order will be used across different requests.
+     */
+    public SearchRequest preference(String preference) {
+        this.preference = preference;
+        return this;
+    }
+
+    public String preference() {
+        return this.preference;
+    }
+
+    /**
      * The search type to execute, defaults to {@link SearchType#DEFAULT}.
      */
     public SearchRequest searchType(SearchType searchType) {
@@ -292,6 +307,14 @@ public class SearchRequest implements ActionRequest {
      */
     public SearchRequest source(byte[] source) {
         return source(source, 0, source.length, false);
+    }
+
+
+    /**
+     * The search source to execute.
+     */
+    public SearchRequest source(byte[] source, int offset, int length) {
+        return source(source, offset, length, false);
     }
 
     /**
@@ -371,6 +394,13 @@ public class SearchRequest implements ActionRequest {
      */
     public SearchRequest extraSource(byte[] source) {
         return extraSource(source, 0, source.length, false);
+    }
+
+    /**
+     * Allows to provide additional source that will be used as well.
+     */
+    public SearchRequest extraSource(byte[] source, int offset, int length) {
+        return extraSource(source, offset, length, false);
     }
 
     /**
@@ -494,6 +524,9 @@ public class SearchRequest implements ActionRequest {
         if (in.readBoolean()) {
             routing = in.readUTF();
         }
+        if (in.readBoolean()) {
+            preference = in.readUTF();
+        }
 
         if (in.readBoolean()) {
             scroll = readScroll(in);
@@ -551,6 +584,12 @@ public class SearchRequest implements ActionRequest {
         } else {
             out.writeBoolean(true);
             out.writeUTF(routing);
+        }
+        if (preference == null) {
+            out.writeBoolean(false);
+        } else {
+            out.writeBoolean(true);
+            out.writeUTF(preference);
         }
 
         if (scroll == null) {

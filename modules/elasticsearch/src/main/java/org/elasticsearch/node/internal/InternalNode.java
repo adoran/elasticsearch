@@ -30,6 +30,7 @@ import org.elasticsearch.cluster.ClusterModule;
 import org.elasticsearch.cluster.ClusterNameModule;
 import org.elasticsearch.cluster.ClusterService;
 import org.elasticsearch.cluster.routing.RoutingService;
+import org.elasticsearch.common.CacheRecycler;
 import org.elasticsearch.common.StopWatch;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.component.Lifecycle;
@@ -37,6 +38,7 @@ import org.elasticsearch.common.component.LifecycleComponent;
 import org.elasticsearch.common.inject.Injector;
 import org.elasticsearch.common.inject.Injectors;
 import org.elasticsearch.common.inject.ModulesBuilder;
+import org.elasticsearch.common.io.CachedStreams;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.network.NetworkModule;
@@ -57,6 +59,7 @@ import org.elasticsearch.http.HttpServerModule;
 import org.elasticsearch.indices.IndicesModule;
 import org.elasticsearch.indices.IndicesService;
 import org.elasticsearch.indices.cluster.IndicesClusterStateService;
+import org.elasticsearch.indices.memory.IndexingMemoryBufferController;
 import org.elasticsearch.jmx.JmxModule;
 import org.elasticsearch.jmx.JmxService;
 import org.elasticsearch.monitor.MonitorModule;
@@ -168,6 +171,7 @@ public final class InternalNode implements Node {
         }
 
         injector.getInstance(IndicesService.class).start();
+        injector.getInstance(IndexingMemoryBufferController.class).start();
         injector.getInstance(IndicesClusterStateService.class).start();
         injector.getInstance(RiversManager.class).start();
         injector.getInstance(ClusterService.class).start();
@@ -204,6 +208,7 @@ public final class InternalNode implements Node {
         // stop any changes happening as a result of cluster state changes
         injector.getInstance(IndicesClusterStateService.class).stop();
         // we close indices first, so operations won't be allowed on it
+        injector.getInstance(IndexingMemoryBufferController.class).stop();
         injector.getInstance(IndicesService.class).stop();
         // sleep a bit to let operations finish with indices service
 //        try {
@@ -252,6 +257,7 @@ public final class InternalNode implements Node {
         stopWatch.stop().start("indices_cluster");
         injector.getInstance(IndicesClusterStateService.class).close();
         stopWatch.stop().start("indices");
+        injector.getInstance(IndexingMemoryBufferController.class).close();
         injector.getInstance(IndicesService.class).close();
         stopWatch.stop().start("routing");
         injector.getInstance(RoutingService.class).close();
@@ -298,6 +304,8 @@ public final class InternalNode implements Node {
         }
         stopWatch.stop();
 
+        CacheRecycler.clear();
+        CachedStreams.clear();
         ThreadLocals.clearReferencesThreadLocals();
 
         if (logger.isTraceEnabled()) {

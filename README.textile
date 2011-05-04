@@ -32,7 +32,7 @@ ElasticSearch is a distributed RESTful search engine built for the cloud. Featur
 
 h2. Getting Started
 
-Fist of all, DON'T PANIC. It will take 5 minutes to get the gist of what ElasticSearch is all about.
+First of all, DON'T PANIC. It will take 5 minutes to get the gist of what ElasticSearch is all about.
 
 h3. Installation
 
@@ -196,14 +196,18 @@ We have just covered a very small portion of what ElasticSearch is all about. Fo
 
 h3. Building from Source
 
-ElasticSearch uses Gradle:http://www.gradle.org for its build system. In order to create a distribution, simply run @gradlew@, the distribution will be created under @build/distributions@.
+ElasticSearch uses "Gradle":http://www.gradle.org for its build system.
+
+In order to create a distribution, simply run the @./gradlew@ command in the cloned directory.
+
+The distribution will be created under @build/distributions@.
 
 h1. License
 
 <pre>
 This software is licensed under the Apache 2 license, quoted below.
 
-Copyright 2009-2010 Shay Banon and ElasticSearch <http://www.elasticsearch.com>
+Copyright 2009-2011 Shay Banon and ElasticSearch <http://www.elasticsearch.com>
 
 Licensed under the Apache License, Version 2.0 (the "License"); you may not
 use this file except in compliance with the License. You may obtain a copy of

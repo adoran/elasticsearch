@@ -119,7 +119,7 @@ public class ObjectMapper implements XContentMapper, IncludeInAllMapper {
             context.path().pathType(origPathType);
             context.path().remove();
 
-            objectMapper.includeInAll(includeInAll);
+            objectMapper.includeInAllIfNotSet(includeInAll);
 
             return (Y) objectMapper;
         }
@@ -252,9 +252,21 @@ public class ObjectMapper implements XContentMapper, IncludeInAllMapper {
         }
     }
 
+    @Override public void includeInAllIfNotSet(Boolean includeInAll) {
+        if (this.includeInAll == null) {
+            this.includeInAll = includeInAll;
+        }
+        // when called from outside, apply this on all the inner mappers
+        for (XContentMapper mapper : mappers.values()) {
+            if (mapper instanceof IncludeInAllMapper) {
+                ((IncludeInAllMapper) mapper).includeInAllIfNotSet(includeInAll);
+            }
+        }
+    }
+
     public ObjectMapper putMapper(XContentMapper mapper) {
         if (mapper instanceof IncludeInAllMapper) {
-            ((IncludeInAllMapper) mapper).includeInAll(includeInAll);
+            ((IncludeInAllMapper) mapper).includeInAllIfNotSet(includeInAll);
         }
         synchronized (mutex) {
             mappers = newMapBuilder(mappers).put(mapper.name(), mapper).immutableMap();
@@ -305,6 +317,8 @@ public class ObjectMapper implements XContentMapper, IncludeInAllMapper {
                 currentFieldName = parser.currentName();
             } else if (token == XContentParser.Token.VALUE_NULL) {
                 serializeNullValue(context, currentFieldName);
+            } else if (token == null) {
+                throw new MapperParsingException("object_mapper [" + name + "] tried to parse as object, but got EOF, has a concrete value been provided to it?");
             } else if (token.isValue()) {
                 serializeValue(context, currentFieldName, token);
             }
@@ -574,6 +588,12 @@ public class ObjectMapper implements XContentMapper, IncludeInAllMapper {
 
     protected void doMerge(ObjectMapper mergeWith, MergeContext mergeContext) {
 
+    }
+
+    @Override public void close() {
+        for (XContentMapper mapper : mappers.values()) {
+            mapper.close();
+        }
     }
 
     @Override public XContentBuilder toXContent(XContentBuilder builder, Params params) throws IOException {
